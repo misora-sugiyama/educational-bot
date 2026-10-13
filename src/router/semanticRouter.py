@@ -8,11 +8,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from utlis.config import OPENAI_API_KEY
 from utlis.prompts import PROMPTS
 from backend.modelsPydantic import QueryRequest
-from database.modelsChroma import generate_embedding
+from databases.chroma.modelsChroma import generate_embedding
 from services.queryLangchain import fetchGptResponse
 from router.utterances import UTTERANCES
 from fastapi import HTTPException
 
+from router.RouteMap import ThreadSafeMap
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -34,7 +35,10 @@ class SemanticRouter:
         # Set up variables
         self.crud = crud
         self.encoder = LocalEncoder()
-        # self._setup_routes()
+        self.route_layer_cache = {} # Cache for route layers per role
+        self.response_map_cache = {} # Cache for response maps per role
+        self.routes = []
+        self.route_layer = None
 
         # Define all possible route responses
         self.route_responses = {
@@ -43,82 +47,66 @@ class SemanticRouter:
             "problem_solve_rt": self.problem_solve_guidance,
             "mental_support_rt": self.mental_support_guidance,
         }
-
-        self.route_layer_cache = {} # Cache for route layers per role
-        self.response_map_cache = {} # Cache for response maps per role
-
-        logging.info("Initializing and caching routers...") # Build and cache routers
-        for role in ROLE_ROUTES.keys(): 
-            self._setup_routes(role)
-        logging.info("All routers built and cached.")
-
-    # Set up routes based on role     
-    def _setup_routes(self, role: str):
-        self.progress_report_rt = Route(
-            name="progress_report",
-            utterances=UTTERANCES["progress_report"],
-        )
-
-        self.problem_solve_rt = Route(
-            name="problem_solve_rt",
-            utterances=UTTERANCES["problem_solve"],
-        )
-
-        self.material_info_rt = Route(
-            name="material_info_rt",
-            utterances=UTTERANCES["material_info"],
-        )
-
-        self.mental_support_rt = Route(
-            name="mental_support_rt",
-            utterances=UTTERANCES["mental_support"],
-        )
-        profiles= ROLE_ROUTES.get(role,[]) # Get profiles for the role
-        # If no profiles found, raise exception
-        if not profiles:
-            raise HTTPException(status_code = 403, detail=f"No profiles found for role '{role}'")
-        
-        # Determine allowed routes based on profiles
-        allowed_route_names=set()
-        for p in profiles:
-            allowed_route_names.update(PROFILE_ROUTES_MAP.get(p,[]))
-
-        # Build allowed routes list
-        allowed_routes=[]
-        for route_name in allowed_route_names:
-            route_object=getattr(self, route_name, None)
-            if route_object:
-                allowed_routes.append(route_object)
-
-        # Build the route layer 
-        route_layer=AurelioSemanticRouter( 
-            encoder=self.encoder,
-            routes=allowed_routes,
-            auto_sync="local"
-        )
-        # Filter route responses based on allowed routes
-        filtered_responses = { 
-            name: func for name, func in self.route_responses.items() 
-            if name in allowed_route_names 
-        }
-        self.route_layer_cache[role] = route_layer
-        self.response_map_cache[role] = filtered_responses
-        
-        logging.info(f"Routes cached for role '{role}': {list(filtered_responses.keys())}")
-
-       
+ 
     # Response functions
     async def progress_report_guidance(self, request=None):
         return "Tracking your submitted labs and reviewing feedback will help ensure steady progress."
-
+ 
     async def problem_solve_guidance(self, request=None):
-        return "Start by breaking the problem into smaller parts and focus on the key concepts."
-
-    async def material_info_guidance(self, request):
-        return await self.generate_expert_response(request, collection_name="course_materials", prompt_name="course_instructor")
-
+        return "Let me help you work through this problem step by step."
+ 
+    async def material_info_guidance(self, request=None):
+        return "Here's the course material you requested."
+ 
     async def mental_support_guidance(self, request=None):
-        return "If you are feeling overwhelmed, NYU provides free counseling services to help students manage stress."
+        return "I'm here to support your wellbeing. Let's talk about what's on your mind."
+
+    def _init_route_layer(self):
+        """Lazily initialize the underlying AurelioSemanticRouter."""
+        if self.route_layer is None:
+            if self.encoder is None:
+                self.encoder = LocalEncoder()
+            self.route_layer = AurelioSemanticRouter(encoder=self.encoder, routes=list(self.routes), auto_sync="local")
+            if hasattr(self.route_layer, "sync"):
+                try:
+                    self.route_layer.sync("local")
+                except Exception as e:
+                    logging.error(f"Semantic Router Layer Startup Error: {e}")
+                    raise RuntimeError(f"Failed to sync route layer: {e}") from e
+ 
+    # has to change entirely
+    def _setup_routes(self, routes: ThreadSafeMap):
+        """Initialize routes and route layer"""
+        router_routes = []
+        for route, utterances in routes.items():
+            route_obj = Route(name=route, utterances=utterances)
+            router_routes.append(route_obj)
+        # keep internal `self.routes` in sync with the route layer so
+        # later calls to `add_route` append rather than overwrite.
+        self.routes = router_routes
+        # ensure the route layer exists before updating
+        self._init_route_layer()
+        self.route_layer.routes = list(self.routes)
+        logging.info(f"Successfully setup routes: {self.route_layer.routes}")
+        return {"status": "routes setup", "routes": [r.name for r in router_routes]}
+    
+    def add_route(self, name, utterances):
+        # route_layer may be None; log current known route names
+        current_routes = getattr(self.route_layer, 'routes', self.routes)
+        logging.info(f"Before adding routes: {current_routes}\n")
+        logging.info(f"name: {name}, utterances: {utterances}")
+        route_obj = Route(name=name, utterances=utterances)
+        self.routes.append(route_obj)
+        # ensure router is initialized then update
+        self._init_route_layer()
+        self.route_layer.routes = self.routes
+        if hasattr(self.route_layer, "sync"):
+            try:
+                self.route_layer.sync("local")
+            except Exception as e:
+                logging.error(f'Add Route Error: {e}')
+        logging.info(f"Successfully added routes: {self.route_layer.routes}")
+
 
     async def fallback_response(self, request=None):
         return "I'm not sure I understood that. Could you rephrase or ask something more specific?"
@@ -128,11 +116,14 @@ class SemanticRouter:
         query_embedding = await generate_embedding(request.query)
         collection_name = collection_name
         relevant_docs = await self.crud.get_data_by_similarity(collection_name, query_embedding, top_k=5)
-        
-        content = relevant_docs.get('documents')[0]
+
+        # Extract the list of documents (Chroma returns list-of-lists)
+        docs = relevant_docs.get('documents', [])
+        content = docs[0] if isinstance(docs, list) and len(docs) > 0 else []
         logging.info(f"Relevant messages: {content}")
 
-        answer = await fetchGptResponse(request.query, PROMPTS[prompt_name], relevant_docs)
+        # Pass only a compact dict to the LLM to avoid sending excessive data
+        answer = await fetchGptResponse(request.query, PROMPTS[prompt_name], {"relevant_documents": content})
 
         logging.info(f"Answer: {answer}")
         return {'answer': answer}
@@ -140,46 +131,37 @@ class SemanticRouter:
     async def process_query(self, request: QueryRequest, role: str = None):
         """Main entry point to process a query through the semantic router"""
         try:
-            if role is None:
-                # Try to infer role from the request object, if available
-                role = getattr(request, "role", None) or getattr(request, "user_role", None)
-            # If we still don't have a role, return a clear error instead of failing later
-            if role is None:
-                logging.warning("process_query called without a role and no role could be inferred from the request.")
-                raise HTTPException(status_code=400, detail="Role is required to process the query.")
-            # Get the cached route layer and response map for the role
-            route_layer = self.route_layer_cache.get(role)
-            route_responses = self.response_map_cache.get(role)
-            # Check if the role is valid and has a router
-            if not route_layer or not route_responses:
-                logging.warning(f"No router configured for role '{role}'.")
-                raise HTTPException(status_code=403, detail=f"Role '{role}' does not have any configured routes.")
-            
-            route = route_layer(request.query)
+            logging.info("Attempting to use route layer")
+            # ensure route layer is ready (lazy init)
+            self._init_route_layer()
+            route = self.route_layer(request.query)
+            logging.info(f"Raw route result type: {type(route)}; repr: {repr(route)}")
 
-            logging.info(f"Processed route: {route}")
-
-            if hasattr(route, 'name') and route.name:
-                response_function = self.route_responses.get(route.name, self.fallback_response)
-
-                # Handle async and non-async functions
-                if inspect.iscoroutinefunction(response_function):
-                    response = await response_function(request)
-                else:
-                    response = response_function(request)
+            # Normalize route to an object with a `name` attribute expected by the caller
+            if hasattr(route, "name"):
+                normalized = route
+            elif isinstance(route, str):
+                # router returned the matched route name as a string
+                class _R: pass
+                r = _R()
+                r.name = route
+                normalized = r
+            elif isinstance(route, dict) and "name" in route:
+                class _R: pass
+                r = _R()
+                r.name = route.get("name")
+                normalized = r
             else:
-                response = await self.fallback_response(request)
+                # fallback: coerce to string as the route name
+                class _R: pass
+                r = _R()
+                r.name = str(route)
+                normalized = r
+            logging.info(f"Response from the route layer: {route}, original query: {request.query}")
 
-            # Ensure response is properly formatted
-            if inspect.iscoroutine(response):
-                response = await response 
-                
-            if isinstance(response, dict):
-                return response  
-            elif isinstance(response, str):
-                return {"answer": response}  
-            else:
-                return {"answer": str(response)} 
+            logging.info(f"Processed route: {normalized}")
+
+            return normalized
 
         except Exception as e:
             logging.error(f"Error processing query: {request.query} | Error: {e}")
