@@ -60,8 +60,8 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: marc
-          POSTGRES_PASSWORD: blarg223
+          POSTGRES_USER: ${{ secrets.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
           POSTGRES_DB: ephemeraldb
         ports:
           - 5432:5432
@@ -102,6 +102,8 @@ jobs:
         run: flake8 src/ || true
 
       - name: Wait for Postgres
+        env:
+          POSTGRES_USER: ${{ secrets.CI_POSTGRES_USER }}
         run: |
           for i in {1..10}; do
             pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" && break
@@ -110,8 +112,8 @@ jobs:
 
       - name: Verify Schema
         env:
-          POSTGRES_USER: marc
-          POSTGRES_PASSWORD: blarg223
+          POSTGRES_USER: ${{ secrets.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
           POSTGRES_DB: ephemeraldb
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: 5432
@@ -125,8 +127,8 @@ jobs:
 
       - name: Run postgres tests
         env:
-          POSTGRES_USER: marc
-          POSTGRES_PASSWORD: blarg223
+          POSTGRES_USER: ${{ secrets.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
           POSTGRES_DB: ephemeraldb
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: 5432
