@@ -11,10 +11,22 @@ from backend.modelsPydantic import QueryRequest
 from databases.chroma.modelsChroma import generate_embedding
 from services.queryLangchain import fetchGptResponse
 from router.utterances import UTTERANCES
+from fastapi import HTTPException
+
 from router.RouteMap import ThreadSafeMap
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+ROLE_ROUTES = {
+    "student":["course_materials", "mental_support"],
+    "professor":["course_materials","teaching_support"]
+}
+
+PROFILE_ROUTES_MAP={
+    "course_materials":["material_info_rt"],
+    "teaching_support":["progress_report","problem_solve_rt"],
+    "mental_support":["mental_support_rt"]
+}
 
 class SemanticRouter:
     def __init__(self, crud):
@@ -22,28 +34,46 @@ class SemanticRouter:
         
         # Set up variables
         self.crud = crud
-        # Delay heavy initialization (models, encoders, index) until first use
-        self.encoder = None
+        self.encoder = LocalEncoder()
+        self.route_layer_cache = {} # Cache for route layers per role
+        self.response_map_cache = {} # Cache for response maps per role
         self.routes = []
         self.route_layer = None
 
+        # Define all possible route responses
+        self.route_responses = {
+            "material_info_rt": self.material_info_guidance,
+            "progress_report": self.progress_report_guidance,
+            "problem_solve_rt": self.problem_solve_guidance,
+            "mental_support_rt": self.mental_support_guidance,
+        }
+ 
+    # Response functions
+    async def progress_report_guidance(self, request=None):
+        return "Tracking your submitted labs and reviewing feedback will help ensure steady progress."
+ 
+    async def problem_solve_guidance(self, request=None):
+        return "Let me help you work through this problem step by step."
+ 
+    async def material_info_guidance(self, request=None):
+        return "Here's the course material you requested."
+ 
+    async def mental_support_guidance(self, request=None):
+        return "I'm here to support your wellbeing. Let's talk about what's on your mind."
+
     def _init_route_layer(self):
-        """Lazily initialize the underlying AurelioSemanticRouter to avoid heavy work at import/construct time."""
+        """Lazily initialize the underlying AurelioSemanticRouter."""
         if self.route_layer is None:
-            # create encoder only when needed
             if self.encoder is None:
                 self.encoder = LocalEncoder()
             self.route_layer = AurelioSemanticRouter(encoder=self.encoder, routes=list(self.routes), auto_sync="local")
-            # ensure index is synced after creation
             if hasattr(self.route_layer, "sync"):
                 try:
                     self.route_layer.sync("local")
                 except Exception as e:
-                    logging.error(f'Semantic Router Layer Startup Error: {e}')
-    
-    #create collections endpoint is going to need to make a call to chatgpt when
-    # given a description and create utterances based on it
-
+                    logging.error(f"Semantic Router Layer Startup Error: {e}")
+                    raise RuntimeError(f"Failed to sync route layer: {e}") from e
+ 
     # has to change entirely
     def _setup_routes(self, routes: ThreadSafeMap):
         """Initialize routes and route layer"""
@@ -98,7 +128,7 @@ class SemanticRouter:
         logging.info(f"Answer: {answer}")
         return {'answer': answer}
 
-    async def process_query(self, request: QueryRequest):
+    async def process_query(self, request: QueryRequest, role: str = None):
         """Main entry point to process a query through the semantic router"""
         try:
             logging.info("Attempting to use route layer")

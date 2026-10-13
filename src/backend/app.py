@@ -1,7 +1,7 @@
 # app.py
 
 import httpx, uvicorn, chromadb, time, asyncio
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends , Request
 from typing import Union, List, Any
 from datetime import datetime, timezone
 from utlis.pdf_helpers import read_pdf_text
@@ -29,6 +29,8 @@ from databases.chroma.modelsChroma import (
 )
 from databases.postgres.crudPostgres import PostgresCRUD
 from utlis.prompts import PROMPTS
+from backend.middleware.role_middleware import RoleMiddleware
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
@@ -47,6 +49,7 @@ app = FastAPI()
 crud = CRUD()
 postgres_crud = PostgresCRUD()
 semantic_router = create_router(crud)
+app.add_middleware(RoleMiddleware, audience="your-audience")
 
 def get_db():
     db = postgres_crud.get_connection()
@@ -561,6 +564,12 @@ async def grading_expert(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.post("/query")
+async def query_endpoint(request: Request, body: QueryRequest):
+    user_role = getattr(request.state, "user_role", "student")  # fallback to student
+    response = await semantic_router.process_query(body, role=user_role)
+    return response
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=8000)
