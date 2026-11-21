@@ -1,5 +1,20 @@
 # Project Management Chatbot on Discord
 
+## About this fork
+
+This is **Misora Sugiyama's contribution fork** of the [educational-bot team repository](https://github.com/semaabe/educational-bot), developed collaboratively by the [Flexible AI-enabled Mechatronic Systems Lab (FAMS)](https://engineering.nyu.edu/research/student-research/vertically-integrated-projects/vip-teams/flexible-ai-enabled-mechatronic-systems-lab-fams) team in NYU Tandon's Vertically Integrated Projects (VIP) program.
+
+### Selected contribution
+
+I fixed a message-handling issue that allowed Discord messages flagged for profanity to continue into database storage after moderation, and added an asynchronous regression test checking that the storage path is skipped.
+
+- [Implementation and regression test — commit `7c0f12d`](https://github.com/misora-sugiyama/educational-bot/commit/7c0f12df15bc8124adb1a9a4954dda489e2f8445)
+- [Contribution branch — `profane-persistence`](https://github.com/misora-sugiyama/educational-bot/tree/profane-persistence)
+
+**Status:** The selected code change is on the `profane-persistence` branch. The sections below describe the shared team project and retain its existing project documentation.
+
+---
+
 ## Overview
 
 This project, developed under NYU Tandon's Flexible AI-enabled Mechatronic Systems Lab (FAMS), is a sophisticated application that integrates generative AI to enhance project management for both teachers and students. Designed to operate on Discord, the chatbot captures user requests and interactions, leveraging advanced microservices and interfaces to improve collaboration and efficiency in educational environments. Users can ask questions related to their channels or course materials and receive accurate, context-aware responses.
